@@ -19,8 +19,25 @@ import cors from "cors";
 import { chromium } from "playwright";
 
 const app = express();
-app.use(cors());
+
+// يسمح لأي موقع (زي Netlify) يتواصل مع هذا السيرفر
+app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"] }));
+app.options(/.*/, cors());
 app.use(express.json());
+
+// نسجل كل طلب يوصل للسيرفر — حتى نتأكد هل الطلبات توصل أصلاً أو لا
+app.use((req, res, next) => {
+  console.log(`📥 طلب جديد: ${req.method} ${req.path} — من: ${req.headers.origin || "غير معروف"}`);
+  next();
+});
+
+// نمسك أي خطأ غير متوقع يطيح السيرفر (بدل ما يطيح بصمت بدون أي سجل)
+process.on("uncaughtException", (err) => {
+  console.error("❌ خطأ غير متوقع (uncaughtException):", err);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("❌ خطأ غير متوقع (unhandledRejection):", err);
+});
 
 // سعر صرف الدولار بالدينار العراقي — غيّره من هنا إذا تغير السعر
 const USD_TO_IQD = 1320;
@@ -32,14 +49,18 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 app.post("/api/calculate", async (req, res) => {
   const { cartUrl } = req.body || {};
+  console.log("🛒 رابط السلة المستلم:", cartUrl);
 
   if (!cartUrl || typeof cartUrl !== "string" || !/shein\.com/i.test(cartUrl)) {
+    console.log("⛔ الرابط مرفوض — ما يحتوي shein.com");
     return res.status(400).json({ error: "رابط السلة غير صحيح، تأكد إنه رابط من شي إن" });
   }
 
   let browser;
   try {
+    console.log("🚀 فاتح المتصفح المخفي...");
     browser = await chromium.launch({ headless: true });
+    console.log("✅ المتصفح فتح، جاري تحميل صفحة السلة...");
     const context = await browser.newContext({
       locale: "ar-KW",
       // TODO: إذا الرابط ما يفتح على نسخة الكويت (kw) تلقائياً، جرب تبدل
@@ -51,6 +72,7 @@ app.post("/api/calculate", async (req, res) => {
     const page = await context.newPage();
 
     await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 45000 });
+    console.log("✅ الصفحة تحملت، جاري قراءة عناصر السلة...");
     // نعطي الصفحة وقت إضافي حتى تحمّل عناصر السلة بالكامل (تحميل كسول/JS)
     await page.waitForTimeout(3000);
 
