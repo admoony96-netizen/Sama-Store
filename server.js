@@ -232,3 +232,79 @@ app.post("/api/calculate", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`سيرفر سما ستور شغال على المنفذ ${PORT}`);
 });
+
+// رابط تشخيص: يفحص بنية الصفحة الحقيقية (أسماء الـ class تبع عناصر
+// السعر والكمية) حتى نكتب selectors دقيقة 100% بدل التخمين.
+// الاستخدام: /api/inspect-cart?url=رابط_السلة_مرمّز
+app.get("/api/inspect-cart", async (req, res) => {
+  const cartUrl = req.query.url;
+  if (!cartUrl) {
+    return res.status(400).json({ error: "ضيف ?url=رابط_السلة بنهاية الرابط" });
+  }
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ...devices["iPhone 13"], locale: "ar-KW" });
+    const page = await context.newPage();
+
+    await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => {
+      console.log("⚠️ networkidle ما وصل، نكمل:", e.message);
+    });
+    await page.waitForTimeout(3000);
+
+    // ندور كل عنصر "ورقة" (بدون عناصر داخلية) نصه رقم يشبه سعر (مثل 5.36)
+    const priceElements = await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll("body *"));
+      const priceLike = all.filter((el) => {
+        if (el.children.length > 0) return false;
+        const t = (el.textContent || "").trim();
+        return /^\d+(\.\d{1,2})?$/.test(t) && parseFloat(t) > 0;
+      });
+      return priceLike.slice(0, 8).map((el) => ({
+        text: el.textContent.trim(),
+        tag: el.tagName,
+        className: el.className,
+        parentClassName: el.parentElement ? el.parentElement.className : "",
+        grandParentClassName:
+          el.parentElement && el.parentElement.parentElement
+            ? el.parentElement.parentElement.className
+            : "",
+      }));
+    });
+
+    // ندور أي input (عادة عنصر الكمية يكون input رقمي)
+    const qtyElements = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll("input"));
+      return inputs.slice(0, 8).map((inp) => ({
+        type: inp.type,
+        value: inp.value,
+        className: inp.className,
+        name: inp.name,
+      }));
+    });
+
+    // ندور أي عنصر نصه فقط رقم صحيح صغير (احتمال يكون عداد كمية بدون input)
+    const smallNumberElements = await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll("body *"));
+      const smallNums = all.filter((el) => {
+        if (el.children.length > 0) return false;
+        const t = (el.textContent || "").trim();
+        return /^\d{1,2}$/.test(t) && parseInt(t, 10) >= 1 && parseInt(t, 10) <= 20;
+      });
+      return smallNums.slice(0, 10).map((el) => ({
+        text: el.textContent.trim(),
+        tag: el.tagName,
+        className: el.className,
+        parentClassName: el.parentElement ? el.parentElement.className : "",
+      }));
+    });
+
+    res.json({ ok: true, priceElements, qtyElements, smallNumberElements });
+  } catch (err) {
+    console.error("❌ فشل فحص الصفحة:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
