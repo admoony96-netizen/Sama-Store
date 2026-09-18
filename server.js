@@ -438,6 +438,55 @@ app.get("/api/inspect-cart", async (req, res) => {
   }
 });
 
+// رابط اختبار: يفتح رابط منتج مفرد (مو سلة) ويطلع سعره — نستخدمه
+// نقارن هل المشكلة بصفحة السلة تحديداً أو بكل صفحات الموقع (مشكلة IP/منطقة)
+app.get("/api/test-product", async (req, res) => {
+  const productUrl = req.query.url;
+  if (!productUrl) {
+    return res.status(400).json({ error: "ضيف ?url=رابط_المنتج بنهاية الرابط" });
+  }
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ ...devices["iPhone 13"], locale: "ar-KW" });
+    const page = await context.newPage();
+
+    await page.goto(productUrl, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => {
+      console.log("⚠️ networkidle ما وصل، نكمل:", e.message);
+    });
+
+    await ensureRealContentLoaded(page, productUrl);
+    await waitForPricesToAppear(page);
+    await autoScroll(page, 4);
+
+    const finalUrl = page.url();
+    const pageTitle = await page.title();
+
+    // نجمع كل نمط سعر واضح بالصفحة (رقم.رقمين) — بترتيب ظهوره
+    const priceMatches = await safeEvaluate(page, () => {
+      const text = document.body.innerText;
+      return (text.match(/\d+\.\d{2}/g) || []).slice(0, 15);
+    });
+
+    const bodyTextSample = await safeEvaluate(page, () => document.body.innerText.slice(0, 1200));
+
+    res.json({
+      ok: true,
+      startUrl: productUrl,
+      finalUrl,
+      pageTitle,
+      priceMatches,
+      bodyTextSample,
+    });
+  } catch (err) {
+    console.error("❌ فشل اختبار المنتج:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`سيرفر سما ستور شغال على المنفذ ${PORT}`);
 });
