@@ -150,26 +150,58 @@ app.get("/api/calculate-test", async (req, res) => {
     const bodyTextSample = await safeEvaluate(page, () => document.body.innerText.slice(0, 1500));
 
     // نفس منطق الحساب الحقيقي — حتى نتأكد من النتيجة قبل ربطها بالواجهة
-    const priceTexts = await safeEvaluate(page, () => {
+    // بس هالمرة نربط كل سعر باسم المنتج المجاور له، حتى نقدر نقارن كل
+    // قطعة لحالها مع سلتك الحقيقية
+    const priceWithNames = await safeEvaluate(page, () => {
       const els = Array.from(document.querySelectorAll('[class*="bsc-cart-item-goods-price__sale-price"]'));
-      return els.map((el) => (el.textContent || "").trim());
+      return els.map((el, idx) => {
+        let card = el;
+        for (let i = 0; i < 5 && card.parentElement; i++) card = card.parentElement;
+        const img = card.querySelector("img");
+        const altText = img ? img.getAttribute("alt") : null;
+        const candidateTexts = Array.from(card.querySelectorAll("*"))
+          .map((e) => (e.textContent || "").trim())
+          .filter((t) => t.length > 12 && t.length < 140 && !/^\d+\.\d{2}$/.test(t));
+        return {
+          idx,
+          price: el.textContent.trim(),
+          altText: altText ? altText.slice(0, 80) : null,
+          possibleTitle: candidateTexts[0] ? candidateTexts[0].slice(0, 80) : null,
+        };
+      });
     });
 
-    const USD_TO_IQD_LOCAL = 1320;
-    let totalIQD = 0;
-    const breakdown = [];
-    for (const text of priceTexts) {
-      const priceUSD = parseFloat(String(text).replace(/[^0-9.]/g, "")) || 0;
-      if (priceUSD <= 0) continue;
-      const lineIQD = Math.round(priceUSD * USD_TO_IQD_LOCAL);
-      totalIQD += lineIQD;
-      breakdown.push({ priceUSD, lineIQD });
-    }
+    // ندور كلمات شائعة تدل على قسم "منتجات مقترحة" منفصل عن السلة
+    // الفعلية، حتى نعرف وين بالضبط ينتهي القسم الحقيقي
+    const sectionMarkers = await safeEvaluate(page, () => {
+      const keywords = [
+        "قد يعجبك",
+        "مقترح",
+        "موصى",
+        "مشابه",
+        "أضيفي أيضا",
+        "أضف أيضا",
+        "اكتشف المزيد",
+        "You may",
+        "Recommend",
+        "Also like",
+        "Similar",
+      ];
+      const fullText = document.body.innerText;
+      return keywords
+        .map((kw) => {
+          const idx = fullText.indexOf(kw);
+          return idx >= 0 ? { keyword: kw, charIndex: idx } : null;
+        })
+        .filter(Boolean);
+    });
 
     console.log("📄 عنوان الصفحة:", pageTitle);
 
     res.json({
       ok: true,
+      priceWithNames,
+      sectionMarkers,
       count: breakdown.length,
       totalIQD,
       breakdown,
