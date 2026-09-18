@@ -45,6 +45,31 @@ const USD_TO_IQD = 1320;
 // المنفذ (port) اللي يشتغل عليه السيرفر
 const PORT = process.env.PORT || 3000;
 
+// شي إن يحمّل عناصر السلة تدريجياً كلما "تنزل" بالصفحة (lazy load).
+// هذي الدالة تنزل بالصفحة خطوة خطوة، تعطي وقت للتحميل بين كل خطوة،
+// حتى تظهر كل العناصر قبل ما نبدأ نقراها.
+async function autoScroll(page, steps = 8, pauseMs = 700) {
+  for (let i = 0; i < steps; i++) {
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    await page.waitForTimeout(pauseMs);
+  }
+  // نرجع لفوق الصفحة (بعض الصفحات تحتاج هذا حتى ما تفقد عناصر بالأعلى)
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(500);
+}
+
+// ننتظر لين تظهر أرقام أسعار فعلية بنص الصفحة (نمط "رقم.رقمين")، بدل
+// انتظار وقت ثابت قد يكون قصير أو طويل زيادة عن اللزوم.
+async function waitForPricesToAppear(page, maxWaitMs = 12000, intervalMs = 1000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const found = await page.evaluate(() => /\d+\.\d{2}/.test(document.body.innerText));
+    if (found) return true;
+    await page.waitForTimeout(intervalMs);
+  }
+  return false;
+}
+
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // رابط اختبار مباشر: يفتحه بالمتصفح مباشرة (GET) بدون أي علاقة بالواجهة
@@ -251,17 +276,23 @@ app.get("/api/inspect-cart", async (req, res) => {
     await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => {
       console.log("⚠️ networkidle ما وصل، نكمل:", e.message);
     });
-    await page.waitForTimeout(3000);
 
-    // ندور كل عنصر "ورقة" (بدون عناصر داخلية) نصه رقم يشبه سعر (مثل 5.36)
+    const pricesShowedUp = await waitForPricesToAppear(page);
+    console.log("💲 ظهرت أسعار بالصفحة؟", pricesShowedUp);
+
+    await autoScroll(page);
+
+    // نجمع كل عنصر نصه (بالكامل، حتى لو بداخله عناصر فرعية) يطابق نمط
+    // سعر صريح (مثل 5.36)، وبعدين نستبعد أي عنصر "أب" لعنصر ثاني مطابق
+    // — حتى نضمن نمسك أدق عنصر يحتوي السعر فعلياً.
     const priceElements = await page.evaluate(() => {
       const all = Array.from(document.querySelectorAll("body *"));
-      const priceLike = all.filter((el) => {
-        if (el.children.length > 0) return false;
+      const matches = all.filter((el) => {
         const t = (el.textContent || "").trim();
-        return /^\d+(\.\d{1,2})?$/.test(t) && parseFloat(t) > 0;
+        return /^\d+\.\d{2}$/.test(t) && parseFloat(t) > 0;
       });
-      return priceLike.slice(0, 8).map((el) => ({
+      const deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+      return deepest.slice(0, 12).map((el) => ({
         text: el.textContent.trim(),
         tag: el.tagName,
         className: el.className,
@@ -273,26 +304,27 @@ app.get("/api/inspect-cart", async (req, res) => {
       }));
     });
 
-    // ندور أي input (عادة عنصر الكمية يكون input رقمي)
     const qtyElements = await page.evaluate(() => {
       const inputs = Array.from(document.querySelectorAll("input"));
-      return inputs.slice(0, 8).map((inp) => ({
-        type: inp.type,
-        value: inp.value,
-        className: inp.className,
-        name: inp.name,
-      }));
+      return inputs
+        .filter((inp) => inp.type !== "checkbox" && inp.type !== "radio")
+        .slice(0, 10)
+        .map((inp) => ({
+          type: inp.type,
+          value: inp.value,
+          className: inp.className,
+          name: inp.name,
+        }));
     });
 
-    // ندور أي عنصر نصه فقط رقم صحيح صغير (احتمال يكون عداد كمية بدون input)
     const smallNumberElements = await page.evaluate(() => {
       const all = Array.from(document.querySelectorAll("body *"));
-      const smallNums = all.filter((el) => {
-        if (el.children.length > 0) return false;
+      const matches = all.filter((el) => {
         const t = (el.textContent || "").trim();
         return /^\d{1,2}$/.test(t) && parseInt(t, 10) >= 1 && parseInt(t, 10) <= 20;
       });
-      return smallNums.slice(0, 10).map((el) => ({
+      const deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+      return deepest.slice(0, 12).map((el) => ({
         text: el.textContent.trim(),
         tag: el.tagName,
         className: el.className,
@@ -300,7 +332,7 @@ app.get("/api/inspect-cart", async (req, res) => {
       }));
     });
 
-    res.json({ ok: true, priceElements, qtyElements, smallNumberElements });
+    res.json({ ok: true, pricesShowedUp, priceElements, qtyElements, smallNumberElements });
   } catch (err) {
     console.error("❌ فشل فحص الصفحة:", err);
     res.status(500).json({ error: err.message });
