@@ -47,6 +47,27 @@ const PORT = process.env.PORT || 3000;
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+// رابط اختبار مباشر: يفتحه بالمتصفح مباشرة (GET) بدون أي علاقة بالواجهة
+// أو Netlify، حتى نتأكد هل المتصفح المخفي (Chromium) يشتغل أصلاً بالسيرفر
+app.get("/api/test-browser", async (req, res) => {
+  console.log("🧪 اختبار المتصفح المخفي بدأ...");
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    console.log("✅ المتصفح فتح بنجاح");
+    const page = await browser.newPage();
+    await page.goto("https://example.com", { timeout: 20000 });
+    const title = await page.title();
+    console.log("✅ فتح صفحة تجريبية بنجاح:", title);
+    res.json({ ok: true, title });
+  } catch (err) {
+    console.error("❌ فشل اختبار المتصفح:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 app.post("/api/calculate", async (req, res) => {
   const { cartUrl } = req.body || {};
   console.log("🛒 رابط السلة المستلم:", cartUrl);
