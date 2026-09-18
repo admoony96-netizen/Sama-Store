@@ -148,6 +148,9 @@ app.get("/api/calculate-test", async (req, res) => {
     const shareCodeSurvived = shareCode ? htmlContent.includes(shareCode) : null;
 
     const bodyTextSample = await safeEvaluate(page, () => document.body.innerText.slice(0, 1500));
+    const bodyTextFull = await safeEvaluate(page, () => document.body.innerText);
+    const bodyTextTail = bodyTextFull.slice(-2000);
+    console.log("📏 طول كامل نص الصفحة:", bodyTextFull.length);
 
     // نفس منطق الحساب الحقيقي — حتى نتأكد من النتيجة قبل ربطها بالواجهة
     // بس هالمرة نربط كل سعر باسم المنتج المجاور له، حتى نقدر نقارن كل
@@ -208,6 +211,8 @@ app.get("/api/calculate-test", async (req, res) => {
       shareCodeSurvived,
       pageTitle,
       bodyTextSample,
+      bodyTextTail,
+      bodyTextFullLength: bodyTextFull.length,
     });
   } catch (err) {
     console.error("❌ فشل اختبار السلة:", err);
