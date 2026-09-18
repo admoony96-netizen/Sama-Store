@@ -68,6 +68,53 @@ app.get("/api/test-browser", async (req, res) => {
   }
 });
 
+// رابط اختبار ثاني: يشغّل نفس منطق حساب السلة الحقيقي، بس عن طريق GET
+// وباراميتر بالرابط، حتى تگدر تختبره مباشرة بالمتصفح بدون المرور بـ
+// Netlify أو أي CORS. الاستخدام:
+// /api/calculate-test?url=رابط_السلة_هنا (بعد ما تعمله encode)
+app.get("/api/calculate-test", async (req, res) => {
+  const cartUrl = req.query.url;
+  console.log("🧪 اختبار حساب السلة — الرابط:", cartUrl);
+
+  if (!cartUrl) {
+    return res.status(400).json({ error: "ضيف ?url=رابط_السلة بنهاية الرابط" });
+  }
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      locale: "ar-KW",
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    });
+    const page = await context.newPage();
+
+    console.log("🚀 جاري فتح رابط السلة...");
+    await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    console.log("✅ الصفحة تحملت (domcontentloaded)");
+
+    await page.waitForTimeout(4000);
+
+    const pageTitle = await page.title();
+    const bodyTextSample = await page.evaluate(() => document.body.innerText.slice(0, 500));
+
+    console.log("📄 عنوان الصفحة:", pageTitle);
+
+    res.json({
+      ok: true,
+      pageTitle,
+      bodyTextSample,
+      note: "هذا اختبار خام — يوري عنوان الصفحة وأول 500 حرف من نصها، حتى نشوف هل الصفحة تحملت صح ولا محتاجة تسجيل دخول أو حظرت المتصفح",
+    });
+  } catch (err) {
+    console.error("❌ فشل اختبار السلة:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 app.post("/api/calculate", async (req, res) => {
   const { cartUrl } = req.body || {};
   console.log("🛒 رابط السلة المستلم:", cartUrl);
