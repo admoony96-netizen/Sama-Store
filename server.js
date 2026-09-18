@@ -16,7 +16,7 @@
 
 import express from "express";
 import cors from "cors";
-import { chromium } from "playwright";
+import { chromium, devices } from "playwright";
 
 const app = express();
 
@@ -84,9 +84,8 @@ app.get("/api/calculate-test", async (req, res) => {
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
+      ...devices["iPhone 13"],
       locale: "ar-KW",
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     });
     const page = await context.newPage();
 
@@ -107,7 +106,7 @@ app.get("/api/calculate-test", async (req, res) => {
     const shareCode = shareCodeMatch ? shareCodeMatch[1] : null;
     const shareCodeSurvived = shareCode ? htmlContent.includes(shareCode) : null;
 
-    const bodyTextSample = await page.evaluate(() => document.body.innerText.slice(0, 500));
+    const bodyTextSample = await page.evaluate(() => document.body.innerText.slice(0, 1500));
 
     console.log("📄 عنوان الصفحة:", pageTitle);
     console.log("🔑 رمز السلة نجا؟", shareCodeSurvived);
