@@ -332,7 +332,63 @@ app.get("/api/inspect-cart", async (req, res) => {
       }));
     });
 
-    res.json({ ok: true, pricesShowedUp, priceElements, qtyElements, smallNumberElements });
+    // نلگط أقرب "أب" له اسم class فعلي فوق كل رقم <em>، ونطلع شكل الـ HTML
+    // الكامل تبعه — هذا يورينا الحاوية الحقيقية للسعر بكل تفاصيلها
+    const emAncestorSamples = await page.evaluate(() => {
+      const ems = Array.from(document.querySelectorAll("em"));
+      const digitEms = ems.filter((el) => /^\d+$/.test((el.textContent || "").trim()));
+      const results = [];
+      const seen = new Set();
+      for (const em of digitEms) {
+        let anc = em;
+        let hops = 0;
+        while (anc && anc.className === "" && hops < 6) {
+          anc = anc.parentElement;
+          hops++;
+        }
+        if (!anc) continue;
+        const key = anc.className + "|" + anc.tagName;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push({
+          emText: em.textContent.trim(),
+          ancestorClassName: anc.className,
+          ancestorTag: anc.tagName,
+          ancestorOuterHTML: anc.outerHTML.slice(0, 1200),
+        });
+        if (results.length >= 5) break;
+      }
+      return results;
+    });
+
+    // نفس الفكرة، بس فوق أول checkbox (عشان نلگط شكل "بطاقة" المنتج كاملة)
+    const itemContainerSample = await page.evaluate(() => {
+      const checkbox = document.querySelector('input[type="checkbox"]');
+      if (!checkbox) return null;
+      let anc = checkbox;
+      let hops = 0;
+      // نطلع فوق شوي حتى نمسك حاوية المنتج كاملة (مو بس السطر الصغير)
+      while (anc && hops < 5) {
+        anc = anc.parentElement;
+        hops++;
+      }
+      if (!anc) return null;
+      return {
+        ancestorClassName: anc.className,
+        ancestorTag: anc.tagName,
+        ancestorOuterHTML: anc.outerHTML.slice(0, 2500),
+      };
+    });
+
+    res.json({
+      ok: true,
+      pricesShowedUp,
+      priceElements,
+      qtyElements,
+      smallNumberElements,
+      emAncestorSamples,
+      itemContainerSample,
+    });
   } catch (err) {
     console.error("❌ فشل فحص الصفحة:", err);
     res.status(500).json({ error: err.message });
