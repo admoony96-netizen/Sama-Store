@@ -91,21 +91,36 @@ app.get("/api/calculate-test", async (req, res) => {
     const page = await context.newPage();
 
     console.log("🚀 جاري فتح رابط السلة...");
-    await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    console.log("✅ الصفحة تحملت (domcontentloaded)");
+    await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => {
+      console.log("⚠️ networkidle ما وصل بالوقت المحدد، نكمل نشوف وين وصلنا:", e.message);
+    });
+    await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(4000);
+    const finalUrl = page.url();
+    console.log("📍 الرابط النهائي بعد التحويلات:", finalUrl);
 
     const pageTitle = await page.title();
+    const htmlContent = await page.content();
+
+    // نتأكد هل رمز مشاركة السلة انحفظ وياه لحد الصفحة النهائية أو لا
+    const shareCodeMatch = cartUrl.match(/shc=([^&]+)/);
+    const shareCode = shareCodeMatch ? shareCodeMatch[1] : null;
+    const shareCodeSurvived = shareCode ? htmlContent.includes(shareCode) : null;
+
     const bodyTextSample = await page.evaluate(() => document.body.innerText.slice(0, 500));
 
     console.log("📄 عنوان الصفحة:", pageTitle);
+    console.log("🔑 رمز السلة نجا؟", shareCodeSurvived);
 
     res.json({
       ok: true,
+      startUrl: cartUrl,
+      finalUrl,
+      shareCode,
+      shareCodeSurvived,
       pageTitle,
       bodyTextSample,
-      note: "هذا اختبار خام — يوري عنوان الصفحة وأول 500 حرف من نصها، حتى نشوف هل الصفحة تحملت صح ولا محتاجة تسجيل دخول أو حظرت المتصفح",
+      note: "finalUrl يوريك وين وصلت الصفحة فعلياً بعد أي تحويل تلقائي. إذا finalUrl يختلف كلياً عن الرابط الأصلي ورجع لصفحة عامة، ورمز السلة (shareCodeSurvived) طلع false، معناها الرابط يحتاج يفتح داخل تطبيق شي إن نفسه ومستحيل نقرا السلة منه بمتصفح عادي.",
     });
   } catch (err) {
     console.error("❌ فشل اختبار السلة:", err);
