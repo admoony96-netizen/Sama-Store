@@ -149,10 +149,30 @@ app.get("/api/calculate-test", async (req, res) => {
 
     const bodyTextSample = await safeEvaluate(page, () => document.body.innerText.slice(0, 1500));
 
+    // نفس منطق الحساب الحقيقي — حتى نتأكد من النتيجة قبل ربطها بالواجهة
+    const priceTexts = await safeEvaluate(page, () => {
+      const els = Array.from(document.querySelectorAll('[class*="bsc-cart-item-goods-price__sale-price"]'));
+      return els.map((el) => (el.textContent || "").trim());
+    });
+
+    const USD_TO_IQD_LOCAL = 1320;
+    let totalIQD = 0;
+    const breakdown = [];
+    for (const text of priceTexts) {
+      const priceUSD = parseFloat(String(text).replace(/[^0-9.]/g, "")) || 0;
+      if (priceUSD <= 0) continue;
+      const lineIQD = Math.round(priceUSD * USD_TO_IQD_LOCAL);
+      totalIQD += lineIQD;
+      breakdown.push({ priceUSD, lineIQD });
+    }
+
     console.log("📄 عنوان الصفحة:", pageTitle);
 
     res.json({
       ok: true,
+      count: breakdown.length,
+      totalIQD,
+      breakdown,
       startUrl: cartUrl,
       finalUrl,
       shareCode,
@@ -195,43 +215,24 @@ app.post("/api/calculate", async (req, res) => {
 
     await waitForPricesToAppear(page);
     await autoScroll(page);
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForTimeout(500);
 
-    // نجمع كل رقم <em> (شي إن يقسم رقم السعر لأجزاء صغيرة بعلامة <em>
-    // لكل رقم، عشان يتحكم بحجم الخط)، ونربطه بحاوية "بطاقة" المنتج تبعه
-    const items = await safeEvaluate(page, () => {
-      // نلگط كل checkbox (كل وحدة تمثل قطعة بالسلة)
-      const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
-
-      return checkboxes
-        .map((checkbox) => {
-          // نطلع فوق من الـ checkbox حتى نمسك حاوية المنتج كاملة (بطاقة العنصر)
-          let card = checkbox;
-          for (let i = 0; i < 6 && card.parentElement; i++) {
-            card = card.parentElement;
-          }
-
-          // داخل هذي البطاقة، نجمع كل أرقام <em> (أجزاء السعر المقسمة)
-          const ems = Array.from(card.querySelectorAll("em"))
-            .map((em) => em.textContent.trim())
-            .filter((t) => /^\d+$/.test(t));
-
-          // نجمع كل نص البطاقة، ونحاول نلگط نمط سعر كامل (رقم.رقمين) منه كبديل احتياطي
-          const cardText = card.textContent || "";
-          const priceMatches = cardText.match(/\d+\.\d{2}/g) || [];
-
-          return {
-            emParts: ems,
-            priceMatches,
-          };
-        })
-        .filter((it) => it.emParts.length > 0 || it.priceMatches.length > 0);
+    // هذا الكلاس (class) مؤكد 100% من فحص فعلي لصفحة سلة حقيقية —
+    // يحتوي السعر النهائي (بعد الخصم) لكل قطعة بالضبط، ولا شي غيره.
+    // إذا شي إن غيرت تصميم الموقع بالمستقبل وتوقف هذا عن الشغل، شغّل
+    // /api/inspect-cart?url=... من جديد على رابط سلة حقيقي وشوف الكلاس
+    // الجديد بمكانه.
+    const priceTexts = await safeEvaluate(page, () => {
+      const els = Array.from(document.querySelectorAll('[class*="bsc-cart-item-goods-price__sale-price"]'));
+      return els.map((el) => (el.textContent || "").trim());
     });
 
-    console.log(`📦 لگينا ${items.length} عنصر بالسلة`);
+    console.log(`📦 لگينا ${priceTexts.length} سعر بالسلة:`, priceTexts);
 
-    if (!items.length) {
+    if (!priceTexts.length) {
       throw new Error(
-        "ما گدرت أگرا محتوى السلة. تأكد إن الرابط عام (مو خاص بحسابك) وجرب مرة ثانية، أو خبرني بشكل صفحة السلة حتى أعدل السيرفر."
+        "ما گدرت أگرا أسعار السلة. تأكد إن الرابط عام (مو خاص بحسابك) وجرب مرة ثانية، أو خبرني حتى أفحص الصفحة من جديد."
       );
     }
 
@@ -239,16 +240,11 @@ app.post("/api/calculate", async (req, res) => {
     let totalCount = 0;
     const breakdown = [];
 
-    for (const item of items) {
-      // أول سعر واضح نلگطه من نص البطاقة كامل (أدق من تركيب أجزاء <em> يدوياً)
-      let priceUSD = 0;
-      if (item.priceMatches.length > 0) {
-        priceUSD = parseFloat(item.priceMatches[0]) || 0;
-      }
-
+    for (const text of priceTexts) {
+      const priceUSD = parseFloat(String(text).replace(/[^0-9.]/g, "")) || 0;
       if (priceUSD <= 0) continue;
 
-      const qty = 1; // ما لگينا عنصر كمية منفصل بالصفحة — كل قطعة بالسلة نعتبرها 1
+      const qty = 1; // كل سطر بالسلة المشتركة يمثل قطعة وحدة
       const lineIQD = Math.round(priceUSD * USD_TO_IQD) * qty;
       totalIQD += lineIQD;
       totalCount += qty;
