@@ -2,17 +2,9 @@
 //
 // كيف يشتغل:
 //   1) الواجهة (index.html) ترسل رابط السلة إلى POST /api/calculate
-//   2) السيرفر يفتح الرابط بمتصفح مخفي (Playwright/Chromium)
+//   2) السيرفر يفتح الرابط بمتصفح مخفي (Playwright/Chromium) متنكر كموبايل
 //   3) يقرا سعر كل قطعة بالدولار من صفحة السلة، يضربها × USD_TO_IQD
 //   4) يرجع مجموع السلة كامل + عدد القطع
-//
-// ⚠️ ملاحظة مهمة: ما گدرت أختبر هذا الكود على موقع شي إن الحقيقي لأن بيئتي
-// هنا ما عندها اتصال إنترنت. الـ selectors (أسماء العناصر) تحتها مبنية على
-// البنية الشائعة لصفحات سلة شي إن، لكن شي إن تغيّر تصميم موقعها بين فترة
-// وأخرى. إذا شغلت السيرفر وطلعت له أخطاء أو أرقام غلط، افتح صفحة السلة
-// بالمتصفح، اضغط F12 > Elements، وابعثلي شكل الـ HTML تبع عنصر السعر
-// وعنصر الكمية حتى أعدل الـ selectors بدقة. الأقسام اللي تحتاج تعديل
-// محددة بعلامة "TODO" تحت.
 
 import express from "express";
 import cors from "cors";
@@ -45,16 +37,37 @@ const USD_TO_IQD = 1320;
 // المنفذ (port) اللي يشتغل عليه السيرفر
 const PORT = process.env.PORT || 3000;
 
+// بعض صفحات شي إن تسوي تنقّل داخلي (redirect/تحديث) بعد التحميل الأولي،
+// وهذا يخلي أي page.evaluate() قيد التنفيذ يفشل برسالة "Execution context
+// was destroyed". هذي الدالة تحاول مرة ثانية تلقائياً بعد ما تستقر الصفحة.
+async function safeEvaluate(page, fn) {
+  try {
+    return await page.evaluate(fn);
+  } catch (err) {
+    const msg = String((err && err.message) || "");
+    if (msg.includes("context was destroyed") || msg.includes("Execution context") || msg.includes("Target closed")) {
+      console.log("♻️ الصفحة تنقلت أثناء الفحص، ننتظر شوي ونعيد المحاولة...");
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForTimeout(1500);
+      return await page.evaluate(fn);
+    }
+    throw err;
+  }
+}
+
 // شي إن يحمّل عناصر السلة تدريجياً كلما "تنزل" بالصفحة (lazy load).
 // هذي الدالة تنزل بالصفحة خطوة خطوة، تعطي وقت للتحميل بين كل خطوة،
 // حتى تظهر كل العناصر قبل ما نبدأ نقراها.
 async function autoScroll(page, steps = 8, pauseMs = 700) {
   for (let i = 0; i < steps; i++) {
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    try {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    } catch (e) {
+      break; // الصفحة تنقلت أو انسكرت، نوقف السكرول بهدوء
+    }
     await page.waitForTimeout(pauseMs);
   }
-  // نرجع لفوق الصفحة (بعض الصفحات تحتاج هذا حتى ما تفقد عناصر بالأعلى)
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
   await page.waitForTimeout(500);
 }
 
@@ -63,7 +76,9 @@ async function autoScroll(page, steps = 8, pauseMs = 700) {
 async function waitForPricesToAppear(page, maxWaitMs = 12000, intervalMs = 1000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const found = await page.evaluate(() => /\d+\.\d{2}/.test(document.body.innerText));
+    const found = await page
+      .evaluate(() => /\d+\.\d{2}/.test(document.body.innerText))
+      .catch(() => false);
     if (found) return true;
     await page.waitForTimeout(intervalMs);
   }
@@ -118,7 +133,9 @@ app.get("/api/calculate-test", async (req, res) => {
     await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => {
       console.log("⚠️ networkidle ما وصل بالوقت المحدد، نكمل نشوف وين وصلنا:", e.message);
     });
-    await page.waitForTimeout(3000);
+
+    await waitForPricesToAppear(page);
+    await autoScroll(page);
 
     const finalUrl = page.url();
     console.log("📍 الرابط النهائي بعد التحويلات:", finalUrl);
@@ -126,15 +143,13 @@ app.get("/api/calculate-test", async (req, res) => {
     const pageTitle = await page.title();
     const htmlContent = await page.content();
 
-    // نتأكد هل رمز مشاركة السلة انحفظ وياه لحد الصفحة النهائية أو لا
     const shareCodeMatch = cartUrl.match(/shc=([^&]+)/);
     const shareCode = shareCodeMatch ? shareCodeMatch[1] : null;
     const shareCodeSurvived = shareCode ? htmlContent.includes(shareCode) : null;
 
-    const bodyTextSample = await page.evaluate(() => document.body.innerText.slice(0, 1500));
+    const bodyTextSample = await safeEvaluate(page, () => document.body.innerText.slice(0, 1500));
 
     console.log("📄 عنوان الصفحة:", pageTitle);
-    console.log("🔑 رمز السلة نجا؟", shareCodeSurvived);
 
     res.json({
       ok: true,
@@ -144,7 +159,6 @@ app.get("/api/calculate-test", async (req, res) => {
       shareCodeSurvived,
       pageTitle,
       bodyTextSample,
-      note: "finalUrl يوريك وين وصلت الصفحة فعلياً بعد أي تحويل تلقائي. إذا finalUrl يختلف كلياً عن الرابط الأصلي ورجع لصفحة عامة، ورمز السلة (shareCodeSurvived) طلع false، معناها الرابط يحتاج يفتح داخل تطبيق شي إن نفسه ومستحيل نقرا السلة منه بمتصفح عادي.",
     });
   } catch (err) {
     console.error("❌ فشل اختبار السلة:", err);
@@ -169,55 +183,51 @@ app.post("/api/calculate", async (req, res) => {
     browser = await chromium.launch({ headless: true });
     console.log("✅ المتصفح فتح، جاري تحميل صفحة السلة...");
     const context = await browser.newContext({
+      ...devices["iPhone 13"],
       locale: "ar-KW",
-      // TODO: إذا الرابط ما يفتح على نسخة الكويت (kw) تلقائياً، جرب تبدل
-      // الدومين يدوياً هنا قبل الفتح، مثلاً استبدال "shein.com" بـ
-      // "shein.com/kw" أو إضافة كوكي المنطقة قبل goto.
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     });
     const page = await context.newPage();
 
-    await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 45000 }).catch((e) => {
+      console.log("⚠️ networkidle ما وصل بالوقت المحدد، نكمل نشوف وين وصلنا:", e.message);
+    });
     console.log("✅ الصفحة تحملت، جاري قراءة عناصر السلة...");
-    // نعطي الصفحة وقت إضافي حتى تحمّل عناصر السلة بالكامل (تحميل كسول/JS)
-    await page.waitForTimeout(3000);
 
-    // TODO: هذا الـ selector يمثل "بطاقة" كل قطعة داخل السلة. جرب هذي
-    // الاحتمالات المعروفة لصفحات شي إن، وإذا ولا وحدة اشتغلت ابعثلي
-    // الـ HTML الفعلي:
-    const ITEM_SELECTORS = [
-      ".cart-item",
-      ".j-cart-item",
-      "[class*='cartItem']",
-      "[class*='cart-list__item']",
-      "[class*='goods-item']",
-    ];
+    await waitForPricesToAppear(page);
+    await autoScroll(page);
 
-    let items = [];
-    for (const sel of ITEM_SELECTORS) {
-      const found = await page.$$eval(sel, (nodes) =>
-        nodes.map((node) => {
-          const priceEl =
-            node.querySelector("[class*='price']:not([class*='origin']):not([class*='del'])") ||
-            node.querySelector("[class*='price']");
-          const qtyEl =
-            node.querySelector("input[class*='num']") ||
-            node.querySelector("[class*='qty']") ||
-            node.querySelector("[class*='quantity']");
+    // نجمع كل رقم <em> (شي إن يقسم رقم السعر لأجزاء صغيرة بعلامة <em>
+    // لكل رقم، عشان يتحكم بحجم الخط)، ونربطه بحاوية "بطاقة" المنتج تبعه
+    const items = await safeEvaluate(page, () => {
+      // نلگط كل checkbox (كل وحدة تمثل قطعة بالسلة)
+      const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
 
-          const priceText = priceEl ? priceEl.textContent : "";
-          const qtyRaw = qtyEl ? qtyEl.value ?? qtyEl.textContent : "1";
+      return checkboxes
+        .map((checkbox) => {
+          // نطلع فوق من الـ checkbox حتى نمسك حاوية المنتج كاملة (بطاقة العنصر)
+          let card = checkbox;
+          for (let i = 0; i < 6 && card.parentElement; i++) {
+            card = card.parentElement;
+          }
 
-          return { priceText: (priceText || "").trim(), qtyRaw: (qtyRaw || "1").trim() };
+          // داخل هذي البطاقة، نجمع كل أرقام <em> (أجزاء السعر المقسمة)
+          const ems = Array.from(card.querySelectorAll("em"))
+            .map((em) => em.textContent.trim())
+            .filter((t) => /^\d+$/.test(t));
+
+          // نجمع كل نص البطاقة، ونحاول نلگط نمط سعر كامل (رقم.رقمين) منه كبديل احتياطي
+          const cardText = card.textContent || "";
+          const priceMatches = cardText.match(/\d+\.\d{2}/g) || [];
+
+          return {
+            emParts: ems,
+            priceMatches,
+          };
         })
-      );
+        .filter((it) => it.emParts.length > 0 || it.priceMatches.length > 0);
+    });
 
-      if (found.length) {
-        items = found;
-        break;
-      }
-    }
+    console.log(`📦 لگينا ${items.length} عنصر بالسلة`);
 
     if (!items.length) {
       throw new Error(
@@ -229,12 +239,16 @@ app.post("/api/calculate", async (req, res) => {
     let totalCount = 0;
     const breakdown = [];
 
-    for (const { priceText, qtyRaw } of items) {
-      const priceUSD = parseFloat(String(priceText).replace(/[^0-9.]/g, "")) || 0;
-      const qty = parseInt(String(qtyRaw).replace(/[^0-9]/g, ""), 10) || 1;
+    for (const item of items) {
+      // أول سعر واضح نلگطه من نص البطاقة كامل (أدق من تركيب أجزاء <em> يدوياً)
+      let priceUSD = 0;
+      if (item.priceMatches.length > 0) {
+        priceUSD = parseFloat(item.priceMatches[0]) || 0;
+      }
 
-      if (priceUSD <= 0) continue; // تجاهل أي عنصر ما گدرنا نگرا سعره
+      if (priceUSD <= 0) continue;
 
+      const qty = 1; // ما لگينا عنصر كمية منفصل بالصفحة — كل قطعة بالسلة نعتبرها 1
       const lineIQD = Math.round(priceUSD * USD_TO_IQD) * qty;
       totalIQD += lineIQD;
       totalCount += qty;
@@ -252,10 +266,6 @@ app.post("/api/calculate", async (req, res) => {
   } finally {
     if (browser) await browser.close();
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`سيرفر سما ستور شغال على المنفذ ${PORT}`);
 });
 
 // رابط تشخيص: يفحص بنية الصفحة الحقيقية (أسماء الـ class تبع عناصر
@@ -281,11 +291,11 @@ app.get("/api/inspect-cart", async (req, res) => {
     console.log("💲 ظهرت أسعار بالصفحة؟", pricesShowedUp);
 
     await autoScroll(page);
+    // نعطي فرصة أخيرة للصفحة تستقر قبل ما نبدأ نقرا منها
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForTimeout(1000);
 
-    // نجمع كل عنصر نصه (بالكامل، حتى لو بداخله عناصر فرعية) يطابق نمط
-    // سعر صريح (مثل 5.36)، وبعدين نستبعد أي عنصر "أب" لعنصر ثاني مطابق
-    // — حتى نضمن نمسك أدق عنصر يحتوي السعر فعلياً.
-    const priceElements = await page.evaluate(() => {
+    const priceElements = await safeEvaluate(page, () => {
       const all = Array.from(document.querySelectorAll("body *"));
       const matches = all.filter((el) => {
         const t = (el.textContent || "").trim();
@@ -304,7 +314,7 @@ app.get("/api/inspect-cart", async (req, res) => {
       }));
     });
 
-    const qtyElements = await page.evaluate(() => {
+    const qtyElements = await safeEvaluate(page, () => {
       const inputs = Array.from(document.querySelectorAll("input"));
       return inputs
         .filter((inp) => inp.type !== "checkbox" && inp.type !== "radio")
@@ -317,24 +327,7 @@ app.get("/api/inspect-cart", async (req, res) => {
         }));
     });
 
-    const smallNumberElements = await page.evaluate(() => {
-      const all = Array.from(document.querySelectorAll("body *"));
-      const matches = all.filter((el) => {
-        const t = (el.textContent || "").trim();
-        return /^\d{1,2}$/.test(t) && parseInt(t, 10) >= 1 && parseInt(t, 10) <= 20;
-      });
-      const deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
-      return deepest.slice(0, 12).map((el) => ({
-        text: el.textContent.trim(),
-        tag: el.tagName,
-        className: el.className,
-        parentClassName: el.parentElement ? el.parentElement.className : "",
-      }));
-    });
-
-    // نلگط أقرب "أب" له اسم class فعلي فوق كل رقم <em>، ونطلع شكل الـ HTML
-    // الكامل تبعه — هذا يورينا الحاوية الحقيقية للسعر بكل تفاصيلها
-    const emAncestorSamples = await page.evaluate(() => {
+    const emAncestorSamples = await safeEvaluate(page, () => {
       const ems = Array.from(document.querySelectorAll("em"));
       const digitEms = ems.filter((el) => /^\d+$/.test((el.textContent || "").trim()));
       const results = [];
@@ -361,14 +354,12 @@ app.get("/api/inspect-cart", async (req, res) => {
       return results;
     });
 
-    // نفس الفكرة، بس فوق أول checkbox (عشان نلگط شكل "بطاقة" المنتج كاملة)
-    const itemContainerSample = await page.evaluate(() => {
+    const itemContainerSample = await safeEvaluate(page, () => {
       const checkbox = document.querySelector('input[type="checkbox"]');
       if (!checkbox) return null;
       let anc = checkbox;
       let hops = 0;
-      // نطلع فوق شوي حتى نمسك حاوية المنتج كاملة (مو بس السطر الصغير)
-      while (anc && hops < 5) {
+      while (anc && hops < 6) {
         anc = anc.parentElement;
         hops++;
       }
@@ -385,7 +376,6 @@ app.get("/api/inspect-cart", async (req, res) => {
       pricesShowedUp,
       priceElements,
       qtyElements,
-      smallNumberElements,
       emAncestorSamples,
       itemContainerSample,
     });
@@ -395,4 +385,8 @@ app.get("/api/inspect-cart", async (req, res) => {
   } finally {
     if (browser) await browser.close();
   }
+});
+
+app.listen(PORT, () => {
+  console.log(`سيرفر سما ستور شغال على المنفذ ${PORT}`);
 });
