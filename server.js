@@ -85,6 +85,24 @@ async function waitForPricesToAppear(page, maxWaitMs = 12000, intervalMs = 1000)
   return false;
 }
 
+// بعض الأحيان الصفحة ترجع شبه فاضية (مثلاً بس كلمة اسم بلد زي
+// "Bahrain") بدل محتوى السلة الفعلي — غالباً محاولة تحديد المنطقة
+// تعثرت. هذي الدالة تتأكد، وإذا الصفحة فاضية، تعيد تحميلها من جديد.
+async function ensureRealContentLoaded(page, cartUrl) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const textLength = await page.evaluate(() => document.body.innerText.trim().length).catch(() => 0);
+    if (textLength > 200) return true; // محتوى حقيقي موجود
+
+    console.log(`⚠️ الصفحة رجعت شبه فاضية (${textLength} حرف بس) — إعادة تحميل، محاولة ${attempt + 1}`);
+    await page.reload({ waitUntil: "networkidle", timeout: 30000 }).catch(async () => {
+      // إذا reload فشل لأي سبب، نحاول نفتح نفس الرابط من جديد
+      await page.goto(cartUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() => {});
+    });
+    await waitForPricesToAppear(page, 8000);
+  }
+  return false;
+}
+
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // رابط اختبار مباشر: يفتحه بالمتصفح مباشرة (GET) بدون أي علاقة بالواجهة
@@ -134,6 +152,7 @@ app.get("/api/calculate-test", async (req, res) => {
       console.log("⚠️ networkidle ما وصل بالوقت المحدد، نكمل نشوف وين وصلنا:", e.message);
     });
 
+    await ensureRealContentLoaded(page, cartUrl);
     await waitForPricesToAppear(page);
     await autoScroll(page);
 
@@ -247,6 +266,7 @@ app.post("/api/calculate", async (req, res) => {
     });
     console.log("✅ الصفحة تحملت، جاري قراءة عناصر السلة...");
 
+    await ensureRealContentLoaded(page, cartUrl);
     await waitForPricesToAppear(page);
     await autoScroll(page);
     await page.waitForLoadState("domcontentloaded").catch(() => {});
@@ -317,6 +337,7 @@ app.get("/api/inspect-cart", async (req, res) => {
       console.log("⚠️ networkidle ما وصل، نكمل:", e.message);
     });
 
+    await ensureRealContentLoaded(page, cartUrl);
     const pricesShowedUp = await waitForPricesToAppear(page);
     console.log("💲 ظهرت أسعار بالصفحة؟", pricesShowedUp);
 
